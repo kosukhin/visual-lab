@@ -78,7 +78,7 @@ export class GalleryPanel {
           <div class="gallery__item-head">
             <strong>${escapeHtml(item.title)}</strong>
             <span class="gallery__badge gallery__badge--${item.source}">
-              ${item.source === 'nano' ? 'Gemini Nano' : 'демо'}
+              ${sourceLabel(item.source)}
             </span>
           </div>
           ${item.description ? `<p class="gallery__desc">${escapeHtml(item.description)}</p>` : ''}
@@ -108,6 +108,12 @@ export class GalleryPanel {
       )
       .join('');
   }
+}
+
+function sourceLabel(source: Visualization['source']): string {
+  if (source === 'nano') return 'Gemini Nano';
+  if (source === 'local') return 'локальная';
+  return 'демо';
 }
 
 export function plural(count: number, one: string, few: string, many: string): string {

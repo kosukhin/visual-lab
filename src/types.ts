@@ -61,11 +61,14 @@ export interface Visualization {
   prompt: string;
   spec: VisualizationSpec;
   createdAt: number;
-  /** Источник: Gemini Nano или локальный демо-планировщик. */
-  source: 'nano' | 'demo';
+  /** Источник: Gemini Nano, локальная WASM-модель или демо-планировщик. */
+  source: BrainKind;
 }
 
 export type ChatRole = 'user' | 'conductor';
+
+/** Кто отвечает пользователю. */
+export type BrainKind = 'nano' | 'local' | 'demo';
 
 export interface ChatMessage {
   role: ChatRole;
@@ -88,7 +91,7 @@ export interface BrainHooks {
 
 /** «Мозг» проводника: Gemini Nano или офлайн-заглушка. */
 export interface ConductorBrain {
-  readonly kind: 'nano' | 'demo';
+  readonly kind: BrainKind;
   readonly label: string;
   chat(userText: string, hooks?: BrainHooks): Promise<BrainReply>;
   reset(): void;

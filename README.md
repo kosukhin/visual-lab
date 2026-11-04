@@ -166,3 +166,25 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   модель); одновременное редактирование файла в другой программе не поддерживается.
 - Мобильные браузеры не поддерживают Gemini Nano: там доступен демо-режим (и
   управление мышью/клавиатурой ограничено).
+
+## Если в консоли что-то пишется
+
+Все сообщения, которые приложение может оставить в DevTools, и что они значат:
+
+| Сообщение | Причина |
+| --- | --- |
+| `The model was available but there was not an execution config available for the feature` | Сообщение самого Chrome: модель ещё не готова к запуску на этом профиле (нет загруженной модели/фиче-конфига). Приложение в этом случае показывает «недоступна» и инструкцию по включению. |
+| `No output language was specified in a LanguageModel API request` | Было в старых сборках без языковой конфигурации. Сейчас приложение всегда передаёт `expectedInputs`/`expectedOutputs` с `languages` (Chrome требует только поддерживаемые: `de/en/es/fr/ja`, поэтому русский браузер автоматически конфигурируется как `en`, а ответы всё равно просим на языке пользователя). |
+| `Unsupported LanguageModel API languages were specified` | Так писал предыдущий вариант кода, который пробовал `['ru','en']` одним списком. Chrome прерывает такой запрос, теперь языки пробуются по одному. |
+| `THREE.WebGLShadowMap: PCFSoftShadowMap has been removed` | Исправлено: three 0.187 удалил этот режим, используется `PCFShadowMap`. |
+| `Unable to use Pointer Lock API` / `WrongDocumentError` | Захват мыши невозможен (headless-браузер, iframe без разрешения). В обычном окне Chrome работает; приложение показывает подсказку. |
+| Кнопки «Скачать модель» нет, бейдж «недоступна» | Chrome вернул `availability() === "unavailable"`, то есть скачивать нечего: модель не разрешена на этом устройстве/профиле. Кнопка показывается только при `downloadable`/`downloading`. |
+| `Не удалось запустить модель: Chrome не может запустить встроенную модель…` | `LanguageModel.create()` бросил `NotSupportedError`: не включены флаги Prompt API или модель не скачана. Шаги — ниже. |
+
+Если модель не включается:
+
+1. `chrome://flags/#prompt-api-for-gemini-nano` → **Enabled**.
+2. `chrome://flags/#optimization-guide-on-device-model` → **Enabled BypassPerfRequirement**.
+3. Перезапустить Chrome.
+4. `chrome://components` → «Optimization Guide On Device Model» → **Check for update**.
+5. В приложении нажать «Проверить снова».

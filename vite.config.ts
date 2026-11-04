@@ -11,6 +11,7 @@ export default defineConfig({
         manualChunks(id: string) {
           if (id.includes('node_modules/three')) return 'three';
           if (id.includes('node_modules/@sqlite.org/sqlite-wasm')) return 'sqlite';
+          if (id.includes('node_modules/@wllama/wllama')) return 'wllama';
           return undefined;
         },
       },

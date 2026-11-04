@@ -2,7 +2,9 @@
  * Тонкая обёртка над встроенной в Chrome моделью Gemini Nano (Prompt API).
  *
  * Поддерживаются оба варианта API:
- *  - новый: `LanguageModel.availability()` / `LanguageModel.create()` (Chrome 138+);
+ *  - новый: `LanguageModel.availability()` / `LanguageModel.create()` (Chrome 138+).
+ *    Свежие сборки требуют языковую конфигурацию (`expectedInputs`/`expectedOutputs`
+ *    с `languages`), иначе модель считается недоступной («no execution config»);
  *  - старый: `ai.languageModel.capabilities()` / `ai.languageModel.create()`.
  *
  * Загрузка модели (несколько ГБ) инициируется вызовом `create()` и требует
@@ -19,6 +21,8 @@ export interface NanoEnvironment {
   legacy: boolean;
   /** Человекочитаемое пояснение для UI. */
   note: string;
+  /** Языки (BCP 47), с которыми модель доступна: их требует современный Prompt API. */
+  languages: string[];
 }
 
 interface DownloadProgressEvent extends Event {
@@ -95,7 +99,18 @@ function availabilityNote(availability: NanoAvailability): string {
 }
 
 export function describeError(error: unknown): string {
-  if (!(error instanceof Error)) return String(error);
+  if (!(error instanceof Error)) {
+    if (error && typeof error === 'object') {
+      const message = (error as { message?: unknown }).message;
+      if (typeof message === 'string' && message) return message;
+      try {
+        return JSON.stringify(error);
+      } catch {
+        return String(error);
+      }
+    }
+    return String(error);
+  }
   if (/user gesture/i.test(error.message)) {
     return 'браузер требует явного клика по кнопке (жест пользователя)';
   }
@@ -106,7 +121,7 @@ export function describeError(error: unknown): string {
     case 'NotAllowedError':
       return 'браузер требует явного действия пользователя (нажмите кнопку ещё раз)';
     case 'NotSupportedError':
-      return 'модель не поддерживает этот запрос (язык или формат ответа)';
+      return 'Chrome не может запустить встроенную модель (обычно не включены флаги Prompt API или модель не скачана в chrome://components)';
     case 'QuotaExceededError':
       return 'не хватает места на диске для модели';
     case 'AbortError':
@@ -118,7 +133,69 @@ export function describeError(error: unknown): string {
   }
 }
 
-/** Определяет, есть ли Prompt API и в каком состоянии модель. */
+/**
+ * Языки, которые поддерживают текущие сборки Gemini Nano в Chrome.
+ * Chrome прерывает запрос, если указать хоть один неподдерживаемый тег, поэтому
+ * мы пробуем только языки из этого списка (и никогда не передаём список целиком).
+ */
+const KNOWN_SUPPORTED_LANGUAGES = ['de', 'en', 'es', 'fr', 'ja'];
+
+/** Базовые теги языков браузера: ['ru', 'en', ...]. */
+function preferredLanguages(): string[] {
+  const result: string[] = [];
+  const push = (tag: string | undefined): void => {
+    const base = tag?.split('-')[0]?.toLowerCase();
+    if (!base || base.length !== 2 || result.includes(base)) return;
+    result.push(base);
+  };
+  if (typeof navigator !== 'undefined') {
+    for (const tag of navigator.languages ?? []) push(tag);
+    push(navigator.language);
+  }
+  return result;
+}
+
+/** Язык браузера, если Chrome его поддерживает, иначе английский. */
+function candidateLanguages(): string[] {
+  const preferred = preferredLanguages()[0];
+  const candidates: string[] = [];
+  if (preferred && KNOWN_SUPPORTED_LANGUAGES.includes(preferred)) candidates.push(preferred);
+  if (!candidates.includes('en')) candidates.push('en');
+  return candidates;
+}
+
+type AvailabilityOptions = {
+  expectedInputs: Array<{ type: 'text'; languages: string[] }>;
+  expectedOutputs: Array<{ type: 'text'; languages: string[] }>;
+};
+
+function availabilityOptions(languages: string[]): AvailabilityOptions | undefined {
+  if (languages.length === 0) return undefined;
+  return {
+    expectedInputs: [{ type: 'text', languages }],
+    expectedOutputs: [{ type: 'text', languages }],
+  };
+}
+
+async function readAvailability(
+  api: LanguageModelApiLike,
+  legacy: boolean,
+  languages: string[],
+): Promise<string> {
+  if (legacy || !api.availability) {
+    return (await api.capabilities?.())?.available ?? 'no';
+  }
+  return api.availability(availabilityOptions(languages));
+}
+
+/**
+ * Определяет, есть ли Prompt API и в каком состоянии модель.
+ *
+ * Современный Chrome требует языковую конфигурацию (`expectedInputs` /
+ * `expectedOutputs` с `languages`), иначе модель считается недоступной
+ * («no execution config»). Пробуем языки по одному, от языка браузера к
+ * английскому; старые сборки просто игнорируют эти опции.
+ */
 export async function detectNano(): Promise<NanoEnvironment> {
   const found = getApi();
   if (!found) {
@@ -127,32 +204,48 @@ export async function detectNano(): Promise<NanoEnvironment> {
       availability: 'unavailable',
       legacy: false,
       note: 'Браузер не поддерживает Prompt API. Нужен Chrome 138+ (desktop) со встроенным Gemini Nano.',
+      languages: ['en'],
     };
   }
 
-  try {
-    const raw = found.api.availability
-      ? await found.api.availability()
-      : ((await found.api.capabilities?.())?.available ?? 'no');
-    const availability = normalizeAvailability(raw);
-    return {
-      supported: true,
-      availability,
-      legacy: found.legacy,
-      note: availabilityNote(availability),
-    };
-  } catch (error) {
-    return {
-      supported: true,
-      availability: 'unavailable',
-      legacy: found.legacy,
-      note: `Не удалось узнать состояние модели: ${describeError(error)}`,
-    };
+  const attempts: string[][] = found.legacy
+    ? [[]]
+    : candidateLanguages().map((language) => [language]);
+
+  let lastError: unknown = null;
+  for (const languages of attempts) {
+    try {
+      const raw = await readAvailability(found.api, found.legacy, languages);
+      const availability = normalizeAvailability(raw);
+      if (availability !== 'unavailable') {
+        return {
+          supported: true,
+          availability,
+          legacy: found.legacy,
+          note: availabilityNote(availability),
+          languages: languages.length ? languages : ['en'],
+        };
+      }
+    } catch (error) {
+      lastError = error;
+    }
   }
+
+  return {
+    supported: true,
+    availability: 'unavailable',
+    legacy: found.legacy,
+    note: lastError
+      ? `Не удалось узнать состояние модели: ${describeError(lastError)}`
+      : availabilityNote('unavailable'),
+    languages: candidateLanguages().slice(-1),
+  };
 }
 
 export interface NanoSessionOptions {
   systemPrompt: string;
+  /** Языки для expectedInputs/expectedOutputs (BCP 47). */
+  languages?: string[];
   temperature?: number;
   /** 0..1 — прогресс скачивания модели. */
   onDownloadProgress?: (progress: number) => void;
@@ -186,29 +279,46 @@ export class NanoSession {
 
     if (typeof options.temperature === 'number') base.temperature = options.temperature;
 
-    const attempt = async (withSystemPrompt: boolean): Promise<LanguageModelSessionLike> => {
+    const languages = options.languages ?? [];
+
+    const attempt = async (
+      withSystemPrompt: boolean,
+      withLanguages: boolean,
+    ): Promise<LanguageModelSessionLike> => {
       const payload: Record<string, unknown> = { ...base };
       if (withSystemPrompt) {
         payload.initialPrompts = [{ role: 'system', content: options.systemPrompt }];
         // старый API принимает системный промпт отдельным полем
         if (found.legacy) payload.systemPrompt = options.systemPrompt;
       }
+      // современные сборки требуют явную языковую конфигурацию
+      if (withLanguages && !found.legacy && languages.length > 0) {
+        Object.assign(payload, availabilityOptions(languages));
+      }
       if (options.signal) payload.signal = options.signal;
       return found.api.create(payload);
     };
 
-    try {
-      return new NanoSession(await attempt(true), found.legacy);
-    } catch (error) {
-      // некоторые сборки не принимают initialPrompts/signal — пробуем минимальный набор
-      if (
-        error instanceof Error &&
-        /NotSupportedError|TypeError|InvalidStateError|NotReadableError/.test(error.name)
-      ) {
-        return new NanoSession(await attempt(false), found.legacy);
+    // Варианты опций для разных сборок Chrome. Повторяем только если ошибка
+    // похожа на «непонятный набор опций»: NotSupportedError/NotAllowedError
+    // означают, что модель вообще не может обслужить запрос.
+    const variants: Array<[boolean, boolean]> = [
+      [true, true],
+      [true, false],
+    ];
+
+    let lastError: unknown = null;
+    for (const [withSystemPrompt, withLanguages] of variants) {
+      try {
+        return new NanoSession(await attempt(withSystemPrompt, withLanguages), found.legacy);
+      } catch (error) {
+        lastError = error;
+        if (!(error instanceof Error)) break;
+        const retryableOptions = /TypeError|InvalidStateError|NotReadableError/.test(error.name);
+        if (!retryableOptions) break;
       }
-      throw error;
     }
+    throw lastError instanceof Error ? lastError : new Error('не удалось создать сессию модели');
   }
 
   /** Запрос к модели. `schema` — JSON Schema для структурного ответа. */

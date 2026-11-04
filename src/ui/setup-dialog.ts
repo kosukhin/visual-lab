@@ -13,6 +13,10 @@ export interface ModelState {
   demoLabel?: string;
   /** 0..1 или null, если загрузки нет. */
   progress: number | null;
+  /** HTML-подсказка «как включить модель» (null — скрыта). */
+  hint: string | null;
+  /** Показать кнопку «Проверить снова». */
+  recheckVisible: boolean;
 }
 
 export interface DbState {
@@ -29,19 +33,39 @@ export interface DbState {
   idbLabel: string | null;
 }
 
+export interface LocalState {
+  badge: string;
+  tone: Tone;
+  note: string;
+  downloadVisible: boolean;
+  downloadLabel: string;
+  downloadDisabled?: boolean;
+  useVisible: boolean;
+  useLabel: string;
+  deleteVisible: boolean;
+  /** 0..1 или null. */
+  progress: number | null;
+  hint: string | null;
+}
+
 export interface SetupHandlers {
   onDownloadModel(): void;
   onUseDemo(): void;
+  onRecheckModel(): void;
   onCreateDatabase(): void;
   onOpenDatabase(): void;
   onResumeDatabase(): void;
   onCreateIdbDatabase(): void;
+  onDownloadLocalModel(): void;
+  onUseLocalModel(): void;
+  onDeleteLocalModel(): void;
   onEnter(): void;
 }
 
 const TEMPLATE = `
   <div class="modal__backdrop"></div>
   <div class="modal__card setup" role="dialog" aria-modal="true" aria-labelledby="setup-title">
+    <div class="setup__scroll">
     <header class="setup__head">
       <span class="setup__logo" aria-hidden="true"></span>
       <div>
@@ -63,11 +87,18 @@ const TEMPLATE = `
         <div class="progress__track"><div class="progress__bar"></div></div>
         <span class="progress__label">0%</span>
       </div>
+      <details class="setup__hint" data-bind="model-hint" hidden>
+        <summary>Как включить Gemini Nano в Chrome</summary>
+        <div class="setup__hint-body" data-bind="model-hint-body"></div>
+      </details>
       <div class="setup__row">
         <button type="button" class="button button--primary" data-action="download">
           Скачать модель Gemini Nano
         </button>
         <button type="button" class="button" data-action="demo">Демо-режим без ИИ</button>
+        <button type="button" class="button button--ghost" data-action="recheck" hidden>
+          Проверить снова
+        </button>
       </div>
     </section>
 
@@ -92,6 +123,35 @@ const TEMPLATE = `
       </div>
     </section>
 
+    <section class="setup__section">
+      <div class="setup__section-head">
+        <h2>3 · Локальная модель (WASM)</h2>
+        <span class="badge" data-bind="local-badge" data-tone="neutral">проверяю…</span>
+      </div>
+      <p class="setup__note" data-bind="local-note">
+        Запасной вариант, если Gemini Nano недоступна: модель работает прямо в браузере на
+        WebAssembly, скачивается один раз и дальше доступна офлайн.
+      </p>
+      <div class="progress" data-bind="local-progress" hidden>
+        <div class="progress__track"><div class="progress__bar"></div></div>
+        <span class="progress__label">0%</span>
+      </div>
+      <div class="setup__row">
+        <button type="button" class="button button--primary" data-action="local-download">
+          Скачать модель
+        </button>
+        <button type="button" class="button" data-action="local-use" hidden>Подключить</button>
+        <button type="button" class="button button--ghost" data-action="local-delete" hidden>
+          Удалить из кэша
+        </button>
+      </div>
+      <details class="setup__hint" data-bind="local-hint" hidden>
+        <summary>Сколько ждать и что внутри</summary>
+        <div class="setup__hint-body" data-bind="local-hint-body"></div>
+      </details>
+    </section>
+    </div>
+
     <footer class="setup__footer">
       <p class="setup__error" data-bind="error" hidden></p>
       <button type="button" class="button button--enter" data-action="enter" disabled>
@@ -114,12 +174,25 @@ export class SetupDialog {
   private readonly modelProgressLabel: HTMLElement;
   private readonly downloadButton: HTMLButtonElement;
   private readonly demoButton: HTMLButtonElement;
+  private readonly recheckButton: HTMLButtonElement;
+  private readonly modelHint: HTMLElement;
+  private readonly modelHintBody: HTMLElement;
   private readonly dbBadge: HTMLElement;
   private readonly dbNote: HTMLElement;
   private readonly createButton: HTMLButtonElement;
   private readonly openButton: HTMLButtonElement;
   private readonly resumeButton: HTMLButtonElement;
   private readonly idbButton: HTMLButtonElement;
+  private readonly localBadge: HTMLElement;
+  private readonly localNote: HTMLElement;
+  private readonly localProgress: HTMLElement;
+  private readonly localProgressBar: HTMLElement;
+  private readonly localProgressLabel: HTMLElement;
+  private readonly localDownloadButton: HTMLButtonElement;
+  private readonly localUseButton: HTMLButtonElement;
+  private readonly localDeleteButton: HTMLButtonElement;
+  private readonly localHint: HTMLElement;
+  private readonly localHintBody: HTMLElement;
   private readonly enterButton: HTMLButtonElement;
   private readonly errorBox: HTMLElement;
 
@@ -140,12 +213,34 @@ export class SetupDialog {
     );
     this.downloadButton = requireElement<HTMLButtonElement>(this.root, '[data-action="download"]');
     this.demoButton = requireElement<HTMLButtonElement>(this.root, '[data-action="demo"]');
+    this.recheckButton = requireElement<HTMLButtonElement>(this.root, '[data-action="recheck"]');
+    this.modelHint = requireElement(this.root, '[data-bind="model-hint"]');
+    this.modelHintBody = requireElement(this.root, '[data-bind="model-hint-body"]');
     this.dbBadge = requireElement(this.root, '[data-bind="db-badge"]');
     this.dbNote = requireElement(this.root, '[data-bind="db-note"]');
     this.createButton = requireElement<HTMLButtonElement>(this.root, '[data-action="create-db"]');
     this.openButton = requireElement<HTMLButtonElement>(this.root, '[data-action="open-db"]');
     this.resumeButton = requireElement<HTMLButtonElement>(this.root, '[data-action="resume-db"]');
     this.idbButton = requireElement<HTMLButtonElement>(this.root, '[data-action="idb-db"]');
+    this.localBadge = requireElement(this.root, '[data-bind="local-badge"]');
+    this.localNote = requireElement(this.root, '[data-bind="local-note"]');
+    this.localProgress = requireElement(this.root, '[data-bind="local-progress"]');
+    this.localProgressBar = requireElement(this.root, '[data-bind="local-progress"] .progress__bar');
+    this.localProgressLabel = requireElement(
+      this.root,
+      '[data-bind="local-progress"] .progress__label',
+    );
+    this.localDownloadButton = requireElement<HTMLButtonElement>(
+      this.root,
+      '[data-action="local-download"]',
+    );
+    this.localUseButton = requireElement<HTMLButtonElement>(this.root, '[data-action="local-use"]');
+    this.localDeleteButton = requireElement<HTMLButtonElement>(
+      this.root,
+      '[data-action="local-delete"]',
+    );
+    this.localHint = requireElement(this.root, '[data-bind="local-hint"]');
+    this.localHintBody = requireElement(this.root, '[data-bind="local-hint-body"]');
     this.enterButton = requireElement<HTMLButtonElement>(this.root, '[data-action="enter"]');
     this.errorBox = requireElement(this.root, '[data-bind="error"]');
 
@@ -158,6 +253,9 @@ export class SetupDialog {
         case 'demo':
           this.handlers.onUseDemo();
           break;
+        case 'recheck':
+          this.handlers.onRecheckModel();
+          break;
         case 'create-db':
           this.handlers.onCreateDatabase();
           break;
@@ -169,6 +267,15 @@ export class SetupDialog {
           break;
         case 'idb-db':
           this.handlers.onCreateIdbDatabase();
+          break;
+        case 'local-download':
+          this.handlers.onDownloadLocalModel();
+          break;
+        case 'local-use':
+          this.handlers.onUseLocalModel();
+          break;
+        case 'local-delete':
+          this.handlers.onDeleteLocalModel();
           break;
         case 'enter':
           this.handlers.onEnter();
@@ -203,6 +310,11 @@ export class SetupDialog {
     this.demoButton.hidden = !state.demoVisible;
     if (state.demoLabel) this.demoButton.textContent = state.demoLabel;
 
+    this.recheckButton.hidden = !state.recheckVisible;
+
+    this.modelHint.hidden = !state.hint;
+    if (state.hint) this.modelHintBody.innerHTML = state.hint;
+
     if (state.progress === null) {
       this.modelProgress.hidden = true;
     } else {
@@ -230,6 +342,33 @@ export class SetupDialog {
     if (state.idbLabel) this.idbButton.textContent = state.idbLabel;
   }
 
+  setLocalState(state: LocalState): void {
+    this.localBadge.textContent = state.badge;
+    this.localBadge.dataset.tone = state.tone;
+    this.localNote.innerHTML = state.note;
+
+    this.localDownloadButton.hidden = !state.downloadVisible;
+    this.localDownloadButton.textContent = state.downloadLabel;
+    this.localDownloadButton.disabled = state.downloadDisabled === true;
+
+    this.localUseButton.hidden = !state.useVisible;
+    this.localUseButton.textContent = state.useLabel;
+
+    this.localDeleteButton.hidden = !state.deleteVisible;
+
+    if (state.progress === null) {
+      this.localProgress.hidden = true;
+    } else {
+      this.localProgress.hidden = false;
+      const percent = Math.round(Math.max(0, Math.min(1, state.progress)) * 100);
+      this.localProgressBar.style.width = `${percent}%`;
+      this.localProgressLabel.textContent = `${percent}%`;
+    }
+
+    this.localHint.hidden = !state.hint;
+    if (state.hint) this.localHintBody.innerHTML = state.hint;
+  }
+
   setCanEnter(canEnter: boolean): void {
     this.enterButton.disabled = !canEnter;
   }
@@ -239,10 +378,15 @@ export class SetupDialog {
     this.errorBox.textContent = message ?? '';
   }
 
-  setBusy(action: 'download' | 'db', busy: boolean): void {
+  setBusy(action: 'download' | 'db' | 'local', busy: boolean): void {
     if (action === 'download') {
       this.downloadButton.disabled = busy;
       this.demoButton.disabled = busy;
+      this.recheckButton.disabled = busy;
+    } else if (action === 'local') {
+      this.localDownloadButton.disabled = busy;
+      this.localUseButton.disabled = busy;
+      this.localDeleteButton.disabled = busy;
     } else {
       this.createButton.disabled = busy;
       this.openButton.disabled = busy;

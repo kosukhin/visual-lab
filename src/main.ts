@@ -1,6 +1,17 @@
 import './style.css';
 import { DemoBrain } from './ai/demo-brain';
-import { describeError, detectNano } from './ai/gemini-nano';
+import { describeError, detectNano, type NanoEnvironment } from './ai/gemini-nano';
+import {
+  DEFAULT_LOCAL_MODEL,
+  clearLocalModelFlag,
+  formatBytes,
+  inspectLocalModel,
+  localModelUrl,
+  readLocalModelFlag,
+  removeLocalModel,
+  storageEstimate,
+  writeLocalModelFlag,
+} from './ai/local-model';
 import { NanoBrain } from './ai/nano-brain';
 import { VizDatabase } from './db/database';
 import {
@@ -19,7 +30,7 @@ import type { ConductorBrain, ConductorStatus, Visualization } from './types';
 import { ChatPanel } from './ui/chat';
 import { GalleryPanel, plural } from './ui/gallery';
 import { Hud } from './ui/hud';
-import { SetupDialog, type DbState, type ModelState } from './ui/setup-dialog';
+import { SetupDialog, type DbState, type LocalState, type ModelState } from './ui/setup-dialog';
 import { World } from './world/world';
 
 /**
@@ -36,6 +47,7 @@ let setup: SetupDialog;
 let gallery: GalleryPanel;
 
 let brain: ConductorBrain | null = null;
+let nanoEnv: NanoEnvironment | null = null;
 let rememberedHandle: FileSystemFileHandle | null = null;
 let dbReady = false;
 let entered = false;
@@ -51,12 +63,27 @@ const modelState: ModelState = {
   demoVisible: true,
   demoLabel: 'Демо-режим без ИИ',
   progress: null,
+  hint: null,
+  recheckVisible: false,
+};
+
+const localState: LocalState = {
+  badge: 'проверяю…',
+  tone: 'neutral',
+  note: 'Смотрю, есть ли локальная модель в кэше…',
+  downloadVisible: false,
+  downloadLabel: 'Скачать модель',
+  useVisible: false,
+  useLabel: 'Подключить',
+  deleteVisible: false,
+  progress: null,
+  hint: null,
 };
 
 const dbState: DbState = {
   badge: 'файл не выбран',
   tone: 'neutral',
-  note: 'Выберите файл на компьютере: в него будут записываться все визуализации.',
+  note: 'Мне нужно место для визуализаций. Выберите файл базы на компьютере — я могу создать новый или открыть уже существующий.',
   createLabel: 'Создать новую базу',
   openLabel: 'Открыть существующую',
   resumeLabel: null,
@@ -69,9 +96,30 @@ function byId<T extends HTMLElement>(id: string): T {
   return element as T;
 }
 
+const NANO_ENABLE_HINT = `
+  <ol>
+    <li>Откройте <code>chrome://flags/#prompt-api-for-gemini-nano</code> и включите <b>Enabled</b>.</li>
+    <li>Откройте <code>chrome://flags/#optimization-guide-on-device-model</code> и выберите
+      <b>Enabled BypassPerfRequirement</b>.</li>
+    <li>Перезапустите Chrome.</li>
+    <li>Откройте <code>chrome://components</code>, найдите «Optimization Guide On Device Model»
+      и нажмите <b>Check for update</b> — так скачивается сама модель (~2–4 ГБ, нужно ~22 ГБ свободного места).</li>
+    <li>Проверьте <code>chrome://on-device-internals</code> → вкладка <b>Broker State</b>: ошибок быть не должно.</li>
+    <li>Вернитесь сюда и нажмите «Проверить снова».</li>
+  </ol>
+  <p style="margin:8px 0 0">Модель требует современный десктопный Chrome: 4+ ГБ видеопамяти
+  (или 16+ ГБ ОЗУ), свободное место и включённые флаги выше. В остальных случаях доступен
+  демо-режим — 3D, SQLite и галерея работают без ИИ.</p>
+`;
+
 function patchModel(patch: Partial<ModelState>): void {
   Object.assign(modelState, patch);
   setup.setModelState(modelState);
+}
+
+function patchLocal(patch: Partial<LocalState>): void {
+  Object.assign(localState, patch);
+  setup.setLocalState(localState);
 }
 
 function patchDb(patch: Partial<DbState>): void {
@@ -116,10 +164,14 @@ async function boot(): Promise<void> {
   setup = new SetupDialog(uiRoot, {
     onDownloadModel: () => void downloadModel(),
     onUseDemo: () => activateDemo(),
+    onRecheckModel: () => void recheckModel(),
     onCreateDatabase: () => void createDatabase(),
     onOpenDatabase: () => void openExistingDatabase(),
     onResumeDatabase: () => void resumeDatabase(),
     onCreateIdbDatabase: () => void createIdbDatabase(),
+    onDownloadLocalModel: () => void downloadLocalModel(),
+    onUseLocalModel: () => void attachLocalBrain(),
+    onDeleteLocalModel: () => void deleteLocalModel(),
     onEnter: () => enterWorld(),
   });
 
@@ -137,6 +189,7 @@ async function boot(): Promise<void> {
 
   await initModel();
   await initStorage();
+  await initLocalModel();
 
   setup.show();
   hideBootScreen();
@@ -149,27 +202,53 @@ function hideBootScreen(): void {
   window.setTimeout(() => boot.remove(), 600);
 }
 
+/** Перепроверка модели без перезагрузки страницы (после включения флагов Chrome). */
+async function recheckModel(): Promise<void> {
+  setup.setError(null);
+  setup.setBusy('download', true);
+  try {
+    await initModel();
+    if (brain?.kind === 'nano') {
+      hud.toast('Gemini Nano доступна — проводник на связи');
+    } else {
+      hud.toast('Модель пока недоступна: включите флаги и скачайте её в chrome://components', 'error');
+    }
+  } finally {
+    setup.setBusy('download', false);
+  }
+}
+
 async function initModel(): Promise<void> {
   const env = await detectNano();
+  nanoEnv = env;
 
   if (env.availability === 'available') {
-    brain = new NanoBrain();
+    if (brain?.kind !== 'nano') {
+      brain?.dispose();
+      brain = new NanoBrain({ languages: env.languages });
+    }
     hud.setBrainStatus('Gemini Nano', 'good');
     chat.setMode('Gemini Nano · на связи');
     chat.setEnabled(true);
     patchModel({
       badge: 'готова',
       tone: 'good',
-      note: 'Gemini Nano уже установлена — проводник полностью работает.',
+      note: `Gemini Nano уже установлена — проводник полностью работает.${languageHint(env)}`,
       downloadVisible: false,
       demoVisible: true,
       demoLabel: 'Демо-режим без ИИ',
       progress: null,
+      hint: null,
+      recheckVisible: false,
     });
     return;
   }
 
   hud.setBrainStatus(env.supported ? 'не установлена' : 'недоступна', 'warn');
+  chat.setEnabled(false);
+  chat.setMode(
+    env.availability === 'unavailable' ? 'Gemini Nano недоступна' : 'Gemini Nano не установлена',
+  );
 
   if (!env.supported) {
     patchModel({
@@ -179,27 +258,54 @@ async function initModel(): Promise<void> {
       downloadVisible: false,
       demoVisible: false,
       progress: null,
+      hint: NANO_ENABLE_HINT,
+      recheckVisible: true,
     });
     activateDemo();
     return;
   }
 
   const downloading = env.availability === 'downloading';
+  const downloadable = env.availability === 'downloadable' || downloading;
   patchModel({
-    badge: downloading ? 'скачивается' : 'не установлена',
-    tone: downloading ? 'warn' : 'neutral',
-    note: `${env.note} Модель скачивается один раз, дальше работает офлайн.`,
-    downloadVisible: true,
+    badge: downloading ? 'скачивается' : downloadable ? 'не установлена' : 'недоступна',
+    tone: downloading ? 'warn' : downloadable ? 'neutral' : 'bad',
+    note: downloadable
+      ? `${env.note} Модель скачивается один раз, дальше работает офлайн.${languageHint(env)}`
+      : env.note,
+    // скачивать можно только если Chrome сам говорит «downloadable/downloading»
+    downloadVisible: downloadable,
     downloadLabel: downloading ? 'Продолжить загрузку' : 'Скачать модель Gemini Nano',
     demoVisible: true,
     progress: null,
+    hint: downloading ? null : NANO_ENABLE_HINT,
+    recheckVisible: true,
   });
 }
 
 /* --------------------------------------------------------------- модель --- */
 
+/** Chrome официально поддерживает ограниченный набор языков модели. */
+const NANO_OFFICIAL_LANGUAGES = ['de', 'en', 'es', 'fr', 'ja'];
+
+function languageHint(env: NanoEnvironment): string {
+  const language = env.languages[0] ?? 'en';
+  if (NANO_OFFICIAL_LANGUAGES.includes(language)) return '';
+  return ` Модель официально поддерживает ${NANO_OFFICIAL_LANGUAGES.join('/')}, поэтому на других языках ответы могут быть проще.`;
+}
+
 async function downloadModel(): Promise<void> {
   setup.setError(null);
+
+  // Chrome уже сказал, что модель недоступна — запускать create() бессмысленно
+  if (nanoEnv?.availability === 'unavailable') {
+    patchModel({ hint: NANO_ENABLE_HINT, recheckVisible: true });
+    setup.setError(
+      'Chrome сообщает, что встроенная модель недоступна. Включите флаги Prompt API, скачайте модель в chrome://components и нажмите «Проверить снова».',
+    );
+    return;
+  }
+
   setup.setBusy('download', true);
   patchModel({
     badge: 'загрузка…',
@@ -210,9 +316,12 @@ async function downloadModel(): Promise<void> {
     downloadDisabled: true,
     demoVisible: true,
     progress: 0,
+    hint: null,
+    recheckVisible: false,
   });
 
   const nano = new NanoBrain({
+    languages: nanoEnv?.languages,
     onDownloadProgress: (progress) => patchModel({ progress }),
   });
 
@@ -231,10 +340,15 @@ async function downloadModel(): Promise<void> {
       downloadLabel: 'Скачать модель Gemini Nano',
       demoVisible: false,
       progress: null,
+      hint: null,
+      recheckVisible: false,
     });
     hud.toast('Gemini Nano готова к работе');
   } catch (error) {
-    setup.setError(`Не удалось запустить модель: ${describeError(error)}`);
+    console.error('[visual-lab] не удалось запустить Gemini Nano', error);
+    setup.setError(
+      `Не удалось запустить модель: ${describeError(error)}. Проверьте флаги chrome://flags/#prompt-api-for-gemini-nano и #optimization-guide-on-device-model, затем скачайте модель в chrome://components («Optimization Guide On Device Model» → Check for update) и нажмите «Проверить снова».`,
+    );
     patchModel({
       badge: 'ошибка загрузки',
       tone: 'bad',
@@ -244,6 +358,8 @@ async function downloadModel(): Promise<void> {
       downloadDisabled: false,
       demoVisible: true,
       progress: null,
+      hint: NANO_ENABLE_HINT,
+      recheckVisible: true,
     });
   } finally {
     setup.setBusy('download', false);
@@ -387,6 +503,159 @@ async function openDatabase(storage: DbStorage, label: string): Promise<void> {
   }
 }
 
+/* --------------------------------------------------- локальная модель ---- */
+
+const LOCAL_MODEL_HINT = `
+  <ol>
+    <li>Модель скачивается один раз (GGUF с HuggingFace) и сохраняется в Cache Storage браузера.</li>
+    <li>После этого Visual Lab работает офлайн: сервер и API не нужны.</li>
+    <li>Считает на CPU через WebAssembly — на слабых машинах ответ может занять 20–60 секунд.</li>
+    <li>Кнопка «Удалить из кэша» освобождает место (несколько сотен мегабайт).</li>
+  </ol>
+`;
+
+const localModel = DEFAULT_LOCAL_MODEL;
+
+/** Движок wllama (~380 КБ JS) грузим только тем, кто включает локальную модель. */
+async function createLocalBrain(
+  options: { onDownloadProgress?: (progress: number) => void } = {},
+): Promise<import('./ai/wllama-brain').WllamaBrain> {
+  const { WllamaBrain } = await import('./ai/wllama-brain');
+  return new WllamaBrain({ modelUrl: localModelUrl(localModel), ...options });
+}
+
+async function initLocalModel(): Promise<void> {
+  const url = localModelUrl(localModel);
+  const flag = readLocalModelFlag();
+  let cached = false;
+  let bytes = flag?.url === url ? flag.bytes : 0;
+
+  // движок поднимаем только если модель действительно когда-то скачивали
+  if (flag?.url === url) {
+    const info = await inspectLocalModel(url);
+    cached = info.cached;
+    bytes = info.bytes;
+    if (!cached) clearLocalModelFlag();
+  }
+
+  const estimate = await storageEstimate();
+  const info = { cached, bytes };
+  const size = info.cached && info.bytes > 0 ? formatBytes(info.bytes) : `${localModel.sizeMb} МБ`;
+  const usage = estimate ? ` Занято на сайте: ${formatBytes(estimate.usage)}.` : '';
+
+  patchLocal({
+    badge: info.cached ? 'в кэше' : 'не скачана',
+    tone: info.cached ? 'good' : 'neutral',
+    note: info.cached
+      ? `Локальная модель ${localModel.label} уже скачана (${size}) — проводник может работать без Gemini Nano и офлайн.${usage}`
+      : `Если Gemini Nano недоступна, скачайте локальную модель: ${localModel.label}, ${localModel.sizeMb} МБ, лицензия ${localModel.license}. Работает на WebAssembly прямо в браузере.`,
+    downloadVisible: !info.cached,
+    downloadLabel: `Скачать модель (${localModel.sizeMb} МБ)`,
+    downloadDisabled: false,
+    useVisible: info.cached && brain?.kind !== 'local',
+    useLabel: 'Подключить локальную модель',
+    deleteVisible: info.cached,
+    progress: null,
+    hint: LOCAL_MODEL_HINT,
+  });
+
+  // модель уже в кэше, а Gemini Nano нет — подключаем автоматически
+  if (info.cached && !brain) await attachLocalBrain(true);
+}
+
+async function attachLocalBrain(silent = false): Promise<void> {
+  const previous = brain;
+  const local = await createLocalBrain();
+  brain = local;
+  if (previous && previous !== local) previous.dispose();
+
+  chat.setEnabled(true);
+  chat.setMode(`${localModel.label} · локально`);
+  hud.setBrainStatus('локальная модель', 'good');
+  patchLocal({ useVisible: false });
+
+  if (!silent) {
+    hud.toast('Локальная модель подключена');
+    world.setConductorStatus('speaking');
+    chat.addMessage({
+      role: 'conductor',
+      kind: 'system',
+      text: 'Теперь я работаю на локальной модели в браузере. Первый ответ будет дольше — модель загружается в память.',
+    });
+  }
+}
+
+async function downloadLocalModel(): Promise<void> {
+  setup.setError(null);
+  setup.setBusy('local', true);
+  patchLocal({
+    badge: 'загрузка…',
+    tone: 'warn',
+    note: `Скачиваю ${localModel.label} (${localModel.sizeMb} МБ). Не закрывайте вкладку — прогресс сохраняется в кэше браузера.`,
+    downloadVisible: true,
+    downloadLabel: 'Загрузка…',
+    downloadDisabled: true,
+    useVisible: false,
+    deleteVisible: false,
+    progress: 0,
+  });
+
+  const local = await createLocalBrain({
+    onDownloadProgress: (progress) => patchLocal({ progress }),
+  });
+
+  try {
+    await local.warmUp();
+    writeLocalModelFlag(localModelUrl(localModel), 0);
+    brain = local;
+    chat.setEnabled(true);
+    chat.setMode(`${localModel.label} · локально`);
+    hud.setBrainStatus('локальная модель', 'good');
+    hud.toast('Локальная модель готова и сохранена в кэше');
+    world.setConductorStatus('speaking');
+    await initLocalModel();
+    patchLocal({ progress: null, badge: 'готова', tone: 'good' });
+    setup.setError(null);
+  } catch (error) {
+    console.error('[visual-lab] не удалось загрузить локальную модель', error);
+    setup.setError(`Не удалось скачать локальную модель: ${describeError(error)}`);
+    patchLocal({
+      badge: 'ошибка',
+      tone: 'bad',
+      note: 'Проверьте соединение и свободное место на диске, затем попробуйте ещё раз.',
+      downloadVisible: true,
+      downloadLabel: `Попробовать снова (${localModel.sizeMb} МБ)`,
+      downloadDisabled: false,
+      useVisible: false,
+      deleteVisible: false,
+      progress: null,
+    });
+  } finally {
+    setup.setBusy('local', false);
+  }
+}
+
+async function deleteLocalModel(): Promise<void> {
+  if (!window.confirm(`Удалить локальную модель из кэша (${localModel.sizeMb} МБ)?`)) return;
+  setup.setBusy('local', true);
+  try {
+    if (brain?.kind === 'local') {
+      brain.dispose();
+      brain = null;
+      chat.setEnabled(false);
+      chat.setMode('Gemini Nano недоступна');
+      hud.setBrainStatus('нет модели', 'warn');
+    }
+    await removeLocalModel(localModelUrl(localModel));
+    hud.toast('Локальная модель удалена из кэша');
+    await initLocalModel();
+  } catch (error) {
+    setup.setError(`Не удалось удалить модель: ${describeError(error)}`);
+  } finally {
+    setup.setBusy('local', false);
+  }
+}
+
 /* ------------------------------------------------------------------ мир --- */
 
 function enterWorld(): void {
@@ -416,7 +685,9 @@ function enterWorld(): void {
     const hello =
       brain?.kind === 'nano'
         ? 'Я рядом и на связи. Скажите, что показать — соберу это из 3D-примитивов и сохраню в вашу базу.'
-        : 'Я рядом. Работаю в демо-режиме — попросите показать дом, ёлку, солнечную систему или график.';
+        : brain?.kind === 'local'
+          ? 'Я работаю на локальной модели в браузере. Скажите, что показать — первые ответы будут медленнее, модель загружается в память.'
+          : 'Я рядом. Работаю в демо-режиме — попросите показать дом, ёлку, солнечную систему или график.';
     chat.addMessage({
       role: 'conductor',
       text:

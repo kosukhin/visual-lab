@@ -53,7 +53,12 @@ export class NanoBrain implements ConductorBrain {
   private disposed = false;
   private history: string[] = [];
 
-  constructor(private readonly options: { onDownloadProgress?: (progress: number) => void } = {}) {}
+  constructor(
+    private readonly options: {
+      languages?: string[];
+      onDownloadProgress?: (progress: number) => void;
+    } = {},
+  ) {}
 
   private async ensureSession(): Promise<NanoSession> {
     if (this.disposed) throw new Error('Проводник остановлен');
@@ -63,6 +68,7 @@ export class NanoBrain implements ConductorBrain {
         : CONDUCTOR_SYSTEM_PROMPT;
       this.session = await NanoSession.create({
         systemPrompt,
+        languages: this.options.languages,
         temperature: 0.6,
         onDownloadProgress: this.options.onDownloadProgress,
       });

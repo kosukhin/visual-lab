@@ -167,7 +167,7 @@ export class VizDatabase {
           prompt: row.prompt,
           spec,
           createdAt: Number(row.created_at),
-          source: row.source === 'demo' ? 'demo' : 'nano',
+          source: row.source === 'demo' ? 'demo' : row.source === 'local' ? 'local' : 'nano',
         } satisfies Visualization;
         if (isVisualization(candidate)) result.push(candidate);
       } catch {
