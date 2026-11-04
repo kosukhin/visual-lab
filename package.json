@@ -1,0 +1,24 @@
+{
+  "name": "visual-lab",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "3D-лаборатория с ИИ-проводником на Gemini Nano: визуализации по запросу, сохранение в SQLite",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run typecheck && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "icons": "node scripts/generate-icons.mjs"
+  },
+  "dependencies": {
+    "@sqlite.org/sqlite-wasm": "^3.54.1-build1",
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.187.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "vite-plugin-pwa": "^2.0.0"
+  }
+}
