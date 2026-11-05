@@ -56,10 +56,13 @@ PWA-приложение: вы попадаете в пустой 3D-мир от
 npm install      # зависимости
 npm run dev      # http://localhost:5173
 npm run build    # typecheck + production-сборка в dist/
-npm run preview  # http://localhost:4173 — собранное приложение
+npm run preview  # http://localhost:4173/visual-lab/ — собранное приложение
 npm run typecheck
 npm run icons    # перегенерировать PWA-иконки (public/icons/*.png)
 ```
+
+`preview` отдаёт сборку с тем же префиксом пути, что и GitHub Pages
+(`/visual-lab/`), поэтому локально видно ровно то, что уезжает на хостинг.
 
 Сквозной смоук-тест (headless Chrome + CDP) проверяет мир, базу, сохранение и
 чтение модели после перезагрузки:
@@ -68,11 +71,20 @@ npm run icons    # перегенерировать PWA-иконки (public/ico
 npm run build && npm run preview &
 google-chrome --headless=new --remote-debugging-port=9223 \\
   --user-data-dir=/tmp/vl-chrome --enable-unsafe-swiftshader --use-angle=swiftshader about:blank &
-node scripts/smoke.mjs http://127.0.0.1:4173/ 9223
+node scripts/smoke.mjs http://127.0.0.1:4173/visual-lab/ 9223
 
 # тот же тест, но с подменой Prompt API — проверяет «настоящий» путь Gemini Nano
-FAKE_NANO=1 node scripts/smoke.mjs http://127.0.0.1:4173/ 9223
+FAKE_NANO=1 node scripts/smoke.mjs http://127.0.0.1:4173/visual-lab/ 9223
 ```
+
+## Деплой
+
+Приложение публикуется на GitHub Pages автоматически: push в `main` → GitHub
+Actions собирает проект и выкладывает `dist/` на
+<https://kosukhin.github.io/visual-lab/>.
+
+Подробно — префикс пути (`base`), разовая настройка Pages, локальная проверка
+боевой сборки, кэш service worker'а и диагностика: **[deploy.md](deploy.md)**.
 
 ## Управление
 

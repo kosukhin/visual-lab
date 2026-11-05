@@ -1,0 +1,62 @@
+name: Deploy to GitHub Pages
+
+# Собирает приложение и публикует dist/ на GitHub Pages.
+# Требуется: Settings → Pages → Source = GitHub Actions.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Минимально необходимые права для деплоя через Pages:
+# contents — чтение репозитория, pages — запись на Pages, id-token — OIDC для deploy-pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Одновременно идёт только один деплой; новые коммиты не отменяют уже начатую публикацию.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Сборка
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          # Vite 8 требует Node ^20.19 || >=22.12
+          node-version: '22'
+          cache: npm
+
+      - name: Зависимости
+        run: npm ci
+
+      - name: Сборка (typecheck + vite build)
+        run: npm run build
+
+      - name: Настройка Pages
+        uses: actions/configure-pages@v5
+
+      - name: Загрузка артефакта
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    name: Публикация
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

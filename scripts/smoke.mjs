@@ -12,7 +12,7 @@
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-const APP_URL = process.argv[2] ?? 'http://127.0.0.1:4173/';
+const APP_URL = process.argv[2] ?? 'http://127.0.0.1:4173/visual-lab/';
 const FAKE_NANO = process.env.FAKE_NANO === '1';
 const CDP_PORT = Number(process.argv[3] ?? 9223);
 const CDP = `http://127.0.0.1:${CDP_PORT}`;
