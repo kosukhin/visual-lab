@@ -1,6 +1,14 @@
+import type { BrainKind } from '../types';
 import { escapeHtml, requireElement } from './dom';
 
 type Tone = 'neutral' | 'good' | 'warn' | 'bad';
+
+/** Иконка движка: видно сразу, кто именно отвечает. */
+export const ENGINE_ICON: Record<BrainKind, string> = {
+  nano: '⚡',
+  local: '🧠',
+  demo: '🎭',
+};
 
 export type HudAction = 'gallery' | 'database' | 'help';
 
@@ -10,6 +18,8 @@ export type HudAction = 'gallery' | 'database' | 'help';
 export class Hud {
   private readonly root: HTMLElement;
   private readonly brainValue: HTMLElement;
+  private readonly brainStat: HTMLElement;
+  private readonly brainIcon: HTMLElement;
   private readonly dbValue: HTMLElement;
   private readonly hint: HTMLElement;
   private readonly toasts: HTMLElement;
@@ -27,8 +37,9 @@ export class Hud {
         </div>
       </div>
       <div class="hud__stats">
-        <div class="hud__stat" data-stat="brain">
-          <span class="hud__stat-label">ИИ</span>
+        <div class="hud__stat" data-stat="brain" data-engine="none">
+          <span class="hud__stat-icon" aria-hidden="true">•</span>
+          <span class="hud__stat-label">Проводник</span>
           <span class="hud__stat-value">проверяю…</span>
         </div>
         <div class="hud__stat" data-stat="db">
@@ -48,6 +59,8 @@ export class Hud {
     host.appendChild(this.root);
 
     this.brainValue = requireElement(this.root, '[data-stat="brain"] .hud__stat-value');
+    this.brainStat = requireElement(this.root, '[data-stat="brain"]');
+    this.brainIcon = requireElement(this.root, '[data-stat="brain"] .hud__stat-icon');
     this.dbValue = requireElement(this.root, '[data-stat="db"] .hud__stat-value');
     this.hint = requireElement(this.root, '.hud__hint');
     this.toasts = requireElement(this.root, '.hud__toasts');
@@ -64,6 +77,32 @@ export class Hud {
 
   setBrainStatus(text: string, tone: Tone = 'neutral'): void {
     this.setValue(this.brainValue, text, tone);
+  }
+
+  /** Проводник ещё не подключён: без иконки движка, чтобы не путать с демо. */
+  setEnginePending(text: string): void {
+    this.brainStat.dataset.engine = 'none';
+    this.brainIcon.textContent = '•';
+    this.brainValue.textContent = text;
+    this.brainValue.dataset.tone = 'warn';
+    this.brainStat.title = 'Проводник ещё не подключён — выберите модель';
+  }
+
+  /**
+   * Явно показывает, каким движком отвечает проводник.
+   * Иконка + название + цвет: ⚡ Gemini Nano, 🧠 локальная WASM-модель, 🎭 демо.
+   */
+  setEngine(kind: BrainKind, label: string): void {
+    this.brainStat.dataset.engine = kind;
+    this.brainIcon.textContent = ENGINE_ICON[kind] ?? '•';
+    this.brainValue.textContent = label;
+    this.brainValue.dataset.tone = kind === 'nano' ? 'good' : kind === 'local' ? 'warn' : 'neutral';
+    this.brainStat.title =
+      kind === 'nano'
+        ? 'Проводник работает на Gemini Nano (встроенная модель Chrome)'
+        : kind === 'local'
+          ? 'Проводник работает на локальной модели в WebAssembly (wllama), без Gemini Nano'
+          : 'Демо-режим: ответы из шаблонов, без ИИ';
   }
 
   setDbStatus(text: string, tone: Tone = 'neutral'): void {

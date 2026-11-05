@@ -87,6 +87,8 @@ export interface BrainReply {
 
 export interface BrainHooks {
   onStatus?: (status: ConductorStatus) => void;
+  /** Служебная подсказка в чате («загружаю модель…»); пустая строка — скрыть. */
+  onNotice?: (text: string) => void;
 }
 
 /** «Мозг» проводника: Gemini Nano или офлайн-заглушка. */

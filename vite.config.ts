@@ -93,6 +93,20 @@ export default defineConfig(({ command, isPreview }) => {
         },
         workbox: {
           globPatterns: ['**/*.{js,css,html,svg,png,wasm,webmanifest}'],
+          // Движок локальной модели весит ~8.7 МБ и нужен не всем: не кладём его
+          // в precache, а кэшируем при первом обращении (см. runtimeCaching).
+          globIgnores: ['**/wllama-*.wasm'],
+          runtimeCaching: [
+            {
+              urlPattern: /\/assets\/wllama-[^/]+\.wasm$/,
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'wasm-engines',
+                expiration: { maxEntries: 4 },
+                cacheableResponse: { statuses: [0, 200] },
+              },
+            },
+          ],
           maximumFileSizeToCacheInBytes: 12 * 1024 * 1024,
           cleanupOutdatedCaches: true,
           // Путь относительный: service worker лежит в /visual-lab/ и сам

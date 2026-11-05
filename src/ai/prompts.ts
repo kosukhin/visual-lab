@@ -224,3 +224,29 @@ export function normalizeSpec(raw: unknown): VisualizationSpec {
 
   return { title, description, parts };
 }
+
+/**
+ * Компактные версии промптов для локальной модели.
+ *
+ * Qwen2.5-0.5B на одном CPU-потоке в WebAssembly считает медленно, поэтому инструкции
+ * максимально короткие: меньше токенов на входе — быстрее первый ответ.
+ */
+export function buildLocalPlanPrompt(userText: string): string {
+  return `Задача: "${userText}"
+
+Ответь ТОЛЬКО JSON: {"reply":"короткий ответ по-русски","action":"none","request":"что показать"}
+Поставь "action":"visualize", только если нужно построить 3D-модель.`;
+}
+
+export function buildLocalSpecPrompt(request: string): string {
+  return `Построй 3D-модель: "${request}".
+
+Ответь ТОЛЬКО JSON:
+{"title":"2-4 слова","description":"1 предложение","parts":[{"shape":"box","position":[0,1.6,0],"scale":[1,1,1],"color":"#4ea1ff"}]}
+
+Правила:
+- shape: box, sphere, cylinder, cone, torus, capsule, plane, octahedron, text, line.
+- position/scale — массивы из 3 чисел, y вверх, модель в кубе 3x3x3 с центром (0,1.6,0).
+- scale = [ширина, высота, глубина], color — "#rrggbb".
+- Не больше 12 частей. Собери узнаваемую форму из примитивов.`;
+}

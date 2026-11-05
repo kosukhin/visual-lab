@@ -1,10 +1,10 @@
-import { Wllama } from '@wllama/wllama/esm/index.js';
+import type { Wllama } from '@wllama/wllama/esm/index.js';
 import wllamaWasmUrl from '@wllama/wllama/esm/wasm/wllama.wasm?url';
 import type { BrainHooks, BrainReply, ConductorBrain, VisualizationSpec } from '../types';
 import { localModelUrl } from './local-model';
 import {
-  buildPlanPrompt,
-  buildSpecPrompt,
+  buildLocalPlanPrompt,
+  buildLocalSpecPrompt,
   extractJson,
   normalizeSpec,
 } from './prompts';
@@ -23,9 +23,15 @@ import {
 const LOCAL_SYSTEM_PROMPT = `Ты — Проводник, ИИ-аватар в 3D-лаборатории Visual Lab. Ты всегда рядом с пользователем.
 Отвечай кратко, на языке пользователя. Когда тебя просят вернуть JSON — возвращай только JSON-объект, без markdown, без пояснений и без текста вокруг.`;
 
-const MAX_TOKENS_PLAN = 240;
-const MAX_TOKENS_SPEC = 720;
-const REQUEST_TIMEOUT_MS = 180_000;
+const MAX_TOKENS_PLAN = 160;
+const MAX_TOKENS_SPEC = 480;
+const REQUEST_TIMEOUT_MS = 600_000;
+
+export interface WllamaBrainOptions {
+  modelUrl?: string;
+  /** 0..1 — прогресс скачивания GGUF. */
+  onDownloadProgress?: (progress: number) => void;
+}
 
 interface PlanResult {
   reply: string;
@@ -57,23 +63,19 @@ function parsePlan(raw: string, fallbackRequest: string): PlanResult {
 
 export class WllamaBrain implements ConductorBrain {
   readonly kind = 'local' as const;
-  readonly label = 'Qwen2.5-0.5B (WASM)';
+  readonly label = 'Локальная модель (WASM)';
 
   private engine: Wllama | null = null;
   private loading: Promise<Wllama> | null = null;
   private disposed = false;
 
-  constructor(
-    private readonly options: {
-      modelUrl?: string;
-      onDownloadProgress?: (progress: number) => void;
-    } = {},
-  ) {}
+  constructor(private readonly options: WllamaBrainOptions = {}) {}
 
   get isReady(): boolean {
     return this.engine !== null;
   }
 
+  /** Скачивает (если нужно) и загружает модель в память. */
   async warmUp(): Promise<void> {
     await this.ensureEngine();
   }
@@ -90,25 +92,20 @@ export class WllamaBrain implements ConductorBrain {
   }
 
   private async createEngine(): Promise<Wllama> {
-    const engine = new Wllama(
+    const { Wllama: WllamaCtor } = await import('@wllama/wllama/esm/index.js');
+    const engine = new WllamaCtor(
       { default: wllamaWasmUrl },
-      {
-        allowOffline: true,
-        suppressNativeLog: true,
-        parallelDownloads: 3,
-      },
+      { allowOffline: true, suppressNativeLog: true, parallelDownloads: 3 },
     );
 
     await engine.loadModelFromUrl(this.options.modelUrl ?? localModelUrl(), {
-      n_ctx: 4096,
+      n_ctx: 2048,
       n_batch: 256,
       // CPU/WASM-путь: предсказуемо работает без WebGPU
       n_gpu_layers: 0,
       useCache: true,
       progressCallback: ({ loaded, total }) => {
-        if (total > 0) {
-          this.options.onDownloadProgress?.(Math.min(1, loaded / total));
-        }
+        if (total > 0) this.options.onDownloadProgress?.(Math.min(1, loaded / total));
       },
     });
 
@@ -125,8 +122,13 @@ export class WllamaBrain implements ConductorBrain {
     const text = userText.trim();
     if (!text) return { reply: 'Я слушаю.', visualization: null };
 
+    if (!this.engine) {
+      hooks?.onNotice?.('Загружаю локальную модель в память…');
+    }
     hooks?.onStatus?.('thinking');
     const engine = await this.ensureEngine();
+    hooks?.onNotice?.('');
+
     const plan = await this.askPlan(engine, text);
 
     let visualization: VisualizationSpec | null = null;
@@ -135,7 +137,7 @@ export class WllamaBrain implements ConductorBrain {
       try {
         visualization = await this.askSpec(engine, plan.request || text);
       } catch (error) {
-        console.warn('[visual-lab] локальная модель не собрала модель', error);
+        console.warn('[visual-lab] локальная модель не собрала визуализацию', error);
       }
     }
 
@@ -143,59 +145,59 @@ export class WllamaBrain implements ConductorBrain {
   }
 
   private async askPlan(engine: Wllama, text: string): Promise<PlanResult> {
-    const raw = await this.ask(engine, buildPlanPrompt(text), MAX_TOKENS_PLAN);
+    const raw = await this.ask(engine, buildLocalPlanPrompt(text), MAX_TOKENS_PLAN);
     return parsePlan(raw, text);
   }
 
   private async askSpec(engine: Wllama, request: string): Promise<VisualizationSpec> {
-    const raw = await this.ask(engine, buildSpecPrompt(request), MAX_TOKENS_SPEC);
+    const raw = await this.ask(engine, buildLocalSpecPrompt(request), MAX_TOKENS_SPEC);
     try {
       return normalizeSpec(extractJson(raw));
     } catch {
       // одна попытка «починки»: просим строго JSON ещё раз
       const repair = await this.ask(
         engine,
-        `Ответ не является валидным JSON. Задание: ${request}. Верни ТОЛЬКО JSON-объект по схеме из задания, без markdown.`,
+        `Ответ не является валидным JSON. Задание: ${request}. Верни ТОЛЬКО JSON по схеме, без markdown.`,
         MAX_TOKENS_SPEC,
       );
       return normalizeSpec(extractJson(repair));
     }
   }
 
+  /**
+   * Один запрос к модели: сначала как к чату (если у GGUF есть chat-шаблон),
+   * иначе — обычным продолжением текста.
+   */
   private async ask(engine: Wllama, prompt: string, maxTokens: number): Promise<string> {
-    const messages = [
-      { role: 'system' as const, content: LOCAL_SYSTEM_PROMPT },
-      { role: 'user' as const, content: prompt },
-    ];
-
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
     try {
-      const completion = await engine
-        .createChatCompletion({
-          messages,
+      try {
+        const completion = await engine.createChatCompletion({
+          messages: [
+            { role: 'system', content: LOCAL_SYSTEM_PROMPT },
+            { role: 'user', content: prompt },
+          ],
           max_tokens: maxTokens,
           temperature: 0.2,
           top_k: 40,
           top_p: 0.9,
           abortSignal: controller.signal,
-          response_format: { type: 'json_object' },
-        })
-        .catch(async (error: unknown) => {
-          // сборка может не знать про response_format — повторяем без него
-          if (error instanceof Error && /abort/i.test(error.name)) throw error;
-          return engine.createChatCompletion({
-            messages,
-            max_tokens: maxTokens,
-            temperature: 0.2,
-            top_k: 40,
-            top_p: 0.9,
-            abortSignal: controller.signal,
-          });
         });
-
-      return completion.choices[0]?.message?.content ?? '';
+        return completion.choices[0]?.message?.content ?? '';
+      } catch (error) {
+        if (controller.signal.aborted) throw error;
+        // у модели может не быть chat-шаблона — продолжаем обычным completion
+        const completion = await engine.createCompletion({
+          prompt: `${LOCAL_SYSTEM_PROMPT}\n\n${prompt}\n\n`,
+          max_tokens: maxTokens,
+          temperature: 0.2,
+          top_p: 0.9,
+          abortSignal: controller.signal,
+        });
+        return completion.choices[0]?.text ?? '';
+      }
     } finally {
       clearTimeout(timer);
     }

@@ -9,6 +9,8 @@ import type { CacheManager } from '@wllama/wllama/esm/index.js';
 export interface LocalModelPreset {
   id: string;
   label: string;
+  /** Короткое имя для интерфейса (подпись над проводником). */
+  shortLabel: string;
   repo: string;
   file: string;
   /** Размер файла в мегабайтах (ориентир для UI). */
@@ -19,6 +21,7 @@ export interface LocalModelPreset {
 export const DEFAULT_LOCAL_MODEL: LocalModelPreset = {
   id: 'qwen2.5-0.5b-instruct-q4_0',
   label: 'Qwen2.5-0.5B-Instruct (Q4_0)',
+  shortLabel: 'Qwen2.5-0.5B (WASM)',
   repo: 'Qwen/Qwen2.5-0.5B-Instruct-GGUF',
   file: 'qwen2.5-0.5b-instruct-q4_0.gguf',
   sizeMb: 409,

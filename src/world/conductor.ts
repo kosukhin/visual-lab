@@ -42,7 +42,8 @@ export class Conductor {
   private readonly antennaTip: THREE.Mesh;
   private readonly antennaLight: THREE.PointLight;
   private readonly ring: THREE.Mesh;
-  private readonly nameSprite: THREE.Sprite;
+  private nameSprite: THREE.Sprite;
+  private currentName = '';
 
   private walkPhase = 0;
   private yaw = 0;
@@ -172,6 +173,7 @@ export class Conductor {
     });
     this.nameSprite = label.sprite;
     this.nameSprite.scale.set(0.72, 0.72 / label.aspect, 1);
+    this.currentName = 'Gemini Nano';
     this.nameSprite.position.set(0, 2.0, 0);
     this.group.add(this.nameSprite);
 
@@ -181,6 +183,31 @@ export class Conductor {
 
   get positionVector(): THREE.Vector3 {
     return this.group.position;
+  }
+
+  /**
+   * Подпись над проводником: показывает, какой движек сейчас отвечает
+   * (Gemini Nano / локальная WASM-модель / демо-режим).
+   */
+  setName(text: string): void {
+    if (!text || text === this.currentName) return;
+    this.currentName = text;
+
+    this.group.remove(this.nameSprite);
+    const oldMaterial = this.nameSprite.material as THREE.SpriteMaterial;
+    oldMaterial.map?.dispose();
+    oldMaterial.dispose();
+
+    const label = createTextSprite(text, {
+      color: '#dbeafe',
+      fontSize: 48,
+      background: 'rgba(11, 15, 26, 0.6)',
+    });
+    this.nameSprite = label.sprite;
+    const width = Math.max(0.6, Math.min(1.7, 0.62 + text.length * 0.055));
+    this.nameSprite.scale.set(width, width / label.aspect, 1);
+    this.nameSprite.position.set(0, 2.0, 0);
+    this.group.add(this.nameSprite);
   }
 
   /** Проводник «говорит» / думает — оживляем мимику и подсветку. */

@@ -365,6 +365,11 @@ export class World {
 
   /* ---------------------------------------------------- визуализации ------ */
 
+  /** Подпись над проводником: какой движок отвечает сейчас. */
+  setConductorName(label: string): void {
+    this.conductor.setName(label);
+  }
+
   setConductorStatus(status: 'idle' | 'thinking' | 'drawing' | 'speaking'): void {
     this.conductor.setStatus(status, status === 'idle' ? 0 : 6000);
   }

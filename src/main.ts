@@ -26,7 +26,7 @@ import {
   type DbStorage,
 } from './db/storage';
 import { registerServiceWorker } from './pwa';
-import type { ConductorBrain, ConductorStatus, Visualization } from './types';
+import type { BrainKind, ConductorBrain, ConductorStatus, Visualization } from './types';
 import { ChatPanel } from './ui/chat';
 import { GalleryPanel, plural } from './ui/gallery';
 import { Hud } from './ui/hud';
@@ -39,6 +39,8 @@ import { World } from './world/world';
  */
 
 const db = new VizDatabase();
+/** Пресет локальной модели (GGUF, wllama). */
+const localModel = DEFAULT_LOCAL_MODEL;
 
 let world: World;
 let hud: Hud;
@@ -89,6 +91,28 @@ const dbState: DbState = {
   resumeLabel: null,
   idbLabel: 'Хранить в браузере',
 };
+
+/**
+ * Единая точка смены движка: обновляет HUD, шапку чата и подписи под ответами,
+ * чтобы пользователь всегда видел, кто именно отвечает.
+ */
+function applyEngine(kind: BrainKind, label: string, announce = false): void {
+  hud.setEngine(kind, label);
+  chat.setEngine(kind, label);
+  // подпись над проводником в 3D — чтобы и в мире было видно, кто отвечает
+  world.setConductorName(
+    kind === 'nano' ? 'Gemini Nano' : kind === 'local' ? localModel.shortLabel : 'Демо-режим',
+  );
+  if (announce) {
+    hud.toast(
+      kind === 'nano'
+        ? 'Проводник работает на Gemini Nano'
+        : kind === 'local'
+          ? `Проводник переключился на локальную модель: ${label}`
+          : 'Проводник переключился в демо-режим (без ИИ)',
+    );
+  }
+}
 
 function byId<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -227,7 +251,7 @@ async function initModel(): Promise<void> {
       brain?.dispose();
       brain = new NanoBrain({ languages: env.languages });
     }
-    hud.setBrainStatus('Gemini Nano', 'good');
+    applyEngine('nano', 'Gemini Nano');
     chat.setMode('Gemini Nano · на связи');
     chat.setEnabled(true);
     patchModel({
@@ -244,7 +268,7 @@ async function initModel(): Promise<void> {
     return;
   }
 
-  hud.setBrainStatus(env.supported ? 'не установлена' : 'недоступна', 'warn');
+  hud.setEnginePending(env.supported ? 'Модель не установлена' : 'Модель недоступна');
   chat.setEnabled(false);
   chat.setMode(
     env.availability === 'unavailable' ? 'Gemini Nano недоступна' : 'Gemini Nano не установлена',
@@ -328,7 +352,7 @@ async function downloadModel(): Promise<void> {
   try {
     await nano.warmUp();
     brain = nano;
-    hud.setBrainStatus('Gemini Nano · готов', 'good');
+    applyEngine('nano', 'Gemini Nano', true);
     chat.setMode('Gemini Nano · на связи');
     chat.setEnabled(true);
     patchModel({
@@ -369,7 +393,7 @@ async function downloadModel(): Promise<void> {
 function activateDemo(note?: string): void {
   if (brain) brain.dispose();
   brain = new DemoBrain();
-  hud.setBrainStatus('демо-режим', 'warn');
+  applyEngine('demo', 'Демо-режим', Boolean(note));
   chat.setMode('демо-режим без ИИ');
   chat.setEnabled(true);
   patchModel({ demoVisible: false, progress: null });
@@ -514,8 +538,6 @@ const LOCAL_MODEL_HINT = `
   </ol>
 `;
 
-const localModel = DEFAULT_LOCAL_MODEL;
-
 /** Движок wllama (~380 КБ JS) грузим только тем, кто включает локальную модель. */
 async function createLocalBrain(
   options: { onDownloadProgress?: (progress: number) => void } = {},
@@ -543,9 +565,10 @@ async function initLocalModel(): Promise<void> {
   const size = info.cached && info.bytes > 0 ? formatBytes(info.bytes) : `${localModel.sizeMb} МБ`;
   const usage = estimate ? ` Занято на сайте: ${formatBytes(estimate.usage)}.` : '';
 
+  const localActive = brain?.kind === 'local';
   patchLocal({
-    badge: info.cached ? 'в кэше' : 'не скачана',
-    tone: info.cached ? 'good' : 'neutral',
+    badge: localActive ? 'работает сейчас' : info.cached ? 'в кэше' : 'не скачана',
+    tone: localActive || info.cached ? 'good' : 'neutral',
     note: info.cached
       ? `Локальная модель ${localModel.label} уже скачана (${size}) — проводник может работать без Gemini Nano и офлайн.${usage}`
       : `Если Gemini Nano недоступна, скачайте локальную модель: ${localModel.label}, ${localModel.sizeMb} МБ, лицензия ${localModel.license}. Работает на WebAssembly прямо в браузере.`,
@@ -560,7 +583,21 @@ async function initLocalModel(): Promise<void> {
   });
 
   // модель уже в кэше, а Gemini Nano нет — подключаем автоматически
-  if (info.cached && !brain) await attachLocalBrain(true);
+  if (info.cached && !brain) {
+    try {
+      await attachLocalBrain(true);
+    } catch (error) {
+      console.warn('[visual-lab] не удалось подключить локальную модель', error);
+      clearLocalModelFlag();
+      patchLocal({
+        badge: 'не скачана',
+        tone: 'neutral',
+        downloadVisible: true,
+        useVisible: false,
+        deleteVisible: false,
+      });
+    }
+  }
 }
 
 async function attachLocalBrain(silent = false): Promise<void> {
@@ -571,7 +608,7 @@ async function attachLocalBrain(silent = false): Promise<void> {
 
   chat.setEnabled(true);
   chat.setMode(`${localModel.label} · локально`);
-  hud.setBrainStatus('локальная модель', 'good');
+  applyEngine('local', `${localModel.label} (WASM)`, !silent);
   patchLocal({ useVisible: false });
 
   if (!silent) {
@@ -610,15 +647,18 @@ async function downloadLocalModel(): Promise<void> {
     brain = local;
     chat.setEnabled(true);
     chat.setMode(`${localModel.label} · локально`);
-    hud.setBrainStatus('локальная модель', 'good');
+    applyEngine('local', `${localModel.label} (WASM)`);
     hud.toast('Локальная модель готова и сохранена в кэше');
     world.setConductorStatus('speaking');
     await initLocalModel();
-    patchLocal({ progress: null, badge: 'готова', tone: 'good' });
+    patchLocal({ progress: null });
     setup.setError(null);
   } catch (error) {
     console.error('[visual-lab] не удалось загрузить локальную модель', error);
-    setup.setError(`Не удалось скачать локальную модель: ${describeError(error)}`);
+    const reason = /network|fetch|abort|timeout|ECONN/i.test(String(describeError(error)))
+      ? 'соединение прервано или сеть недоступна — проверьте интернет и попробуйте снова'
+      : describeError(error);
+    setup.setError(`Не удалось скачать локальную модель: ${reason}`);
     patchLocal({
       badge: 'ошибка',
       tone: 'bad',
@@ -644,11 +684,12 @@ async function deleteLocalModel(): Promise<void> {
       brain = null;
       chat.setEnabled(false);
       chat.setMode('Gemini Nano недоступна');
-      hud.setBrainStatus('нет модели', 'warn');
+      applyEngine('demo', 'Демо-режим');
     }
     await removeLocalModel(localModelUrl(localModel));
     hud.toast('Локальная модель удалена из кэша');
     await initLocalModel();
+    if (!brain) activateDemo('Локальная модель удалена — работаю в демо-режиме.');
   } catch (error) {
     setup.setError(`Не удалось удалить модель: ${describeError(error)}`);
   } finally {
@@ -723,6 +764,13 @@ async function handleSubmit(text: string): Promise<void> {
         world.setConductorStatus(status);
         chat.setThinking(true, status === 'drawing' ? 'Проводник строит модель…' : 'Проводник думает…');
       },
+      onNotice: (notice) => {
+        if (notice) {
+          chat.setThinking(true, notice);
+        } else {
+          chat.setThinking(true, 'Проводник думает…');
+        }
+      },
     });
 
     let chip: { id: string; title: string } | undefined;
@@ -751,7 +799,10 @@ async function handleSubmit(text: string): Promise<void> {
     chat.addMessage({ role: 'conductor', text: reply.reply }, chip);
     db.addMessage('conductor', reply.reply);
   } catch (error) {
-    const message = `Не получилось: ${describeError(error)}`;
+    const message =
+      brain.kind === 'local'
+        ? `Локальная модель не смогла ответить: ${describeError(error)}. Если ошибка повторяется — удалите модель в разделе «Локальная модель» и скачайте рекомендованную Qwen2.5-0.5B.`
+        : `Не получилось: ${describeError(error)}`;
     chat.addMessage({ role: 'conductor', text: message, kind: 'error' });
     hud.toast(message, 'error');
   } finally {

@@ -77,7 +77,7 @@ const TEMPLATE = `
       </div>
     </header>
 
-    <section class="setup__section">
+    <section class="setup__section setup__section--ai">
       <div class="setup__section-head">
         <h2>1 · ИИ-проводник</h2>
         <span class="badge" data-bind="model-badge" data-tone="neutral">проверяю…</span>
@@ -102,30 +102,11 @@ const TEMPLATE = `
       </div>
     </section>
 
-    <section class="setup__section">
-      <div class="setup__section-head">
-        <h2>2 · База данных SQLite</h2>
-        <span class="badge" data-bind="db-badge" data-tone="neutral">файл не выбран</span>
-      </div>
-      <p class="setup__note" data-bind="db-note">
-        Мне нужно место для визуализаций. Выберите файл базы на компьютере —
-        я могу создать новый или открыть уже существующий.
-      </p>
-      <div class="setup__row">
-        <button type="button" class="button button--primary" data-action="create-db">
-          Создать новую базу
-        </button>
-        <button type="button" class="button" data-action="open-db">Открыть существующую</button>
-        <button type="button" class="button" data-action="resume-db" hidden>Продолжить</button>
-        <button type="button" class="button button--ghost" data-action="idb-db" hidden>
-          Хранить в браузере
-        </button>
-      </div>
-    </section>
 
-    <section class="setup__section">
+
+    <section class="setup__section setup__section--local">
       <div class="setup__section-head">
-        <h2>3 · Локальная модель (WASM)</h2>
+        <h2>2 · Локальная модель (WASM)</h2>
         <span class="badge" data-bind="local-badge" data-tone="neutral">проверяю…</span>
       </div>
       <p class="setup__note" data-bind="local-note">
@@ -149,6 +130,27 @@ const TEMPLATE = `
         <summary>Сколько ждать и что внутри</summary>
         <div class="setup__hint-body" data-bind="local-hint-body"></div>
       </details>
+    </section>
+
+    <section class="setup__section setup__section--db">
+      <div class="setup__section-head">
+        <h2>3 · База данных SQLite</h2>
+        <span class="badge" data-bind="db-badge" data-tone="neutral">файл не выбран</span>
+      </div>
+      <p class="setup__note" data-bind="db-note">
+        Мне нужно место для визуализаций. Выберите файл базы на компьютере —
+        я могу создать новый или открыть уже существующий.
+      </p>
+      <div class="setup__row">
+        <button type="button" class="button button--primary" data-action="create-db">
+          Создать новую базу
+        </button>
+        <button type="button" class="button" data-action="open-db">Открыть существующую</button>
+        <button type="button" class="button" data-action="resume-db" hidden>Продолжить</button>
+        <button type="button" class="button button--ghost" data-action="idb-db" hidden>
+          Хранить в браузере
+        </button>
+      </div>
     </section>
     </div>
 
